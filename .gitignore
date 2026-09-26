@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+.env
+.env.*
+!.env.example
+credentials/
+*service-account*.json
+*credentials*.json
+
+output/
+scratch/
