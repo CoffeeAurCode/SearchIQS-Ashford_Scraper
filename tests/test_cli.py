@@ -14,6 +14,7 @@ from searchiqs_scraper.dates import freeze_run_now, task_range
 from searchiqs_scraper.http import HttpClient
 from searchiqs_scraper.models import Outcome
 from test_collector import Runner
+from test_sheets import FakeSpreadsheet
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -151,11 +152,60 @@ def test_check_access_with_a_fixed_family_tries_only_that_one(fake_site, monkeyp
     assert "IPv4: egress US, access OK" in out and "IPv6" not in out and "SEARCHIQS_IP_FAMILY" not in out
 
 
-def test_publishing_mode_not_built_yet(fake_site, clean_env, monkeypatch, capsys):
+@pytest.fixture
+def google(clean_env, monkeypatch):
     creds = clean_env / "sa.json"
     creds.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(creds))
-    monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet")
-    assert cli.main([]) == Outcome.FAILED.exit_code
-    assert "--local-only" in capsys.readouterr().err
-    assert fake_site["runner"] is None
+    monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet-id")
+    sheet = FakeSpreadsheet("Sheet1")
+    opened = []
+    monkeypatch.setattr(cli, "open_spreadsheet", lambda path, key: opened.append(key) or sheet)
+    return sheet, opened
+
+
+def test_default_run_scrapes_then_publishes(fake_site, google, capsys):
+    sheet, opened = google
+    assert cli.main([]) == Outcome.COMPLETE.exit_code
+    assert opened == ["sheet-id"]
+    assert len(sheet.values("Records")) == 13
+    assert ["Scrape outcome", "COMPLETE"] in sheet.values("Run Info")
+    assert f"published 12 records to {FakeSpreadsheet.url}" in capsys.readouterr().out
+
+
+def test_export_only_republishes_a_local_run(fake_site, google, clean_env, capsys):
+    sheet, opened = google
+    assert cli.main(["--local-only"]) == Outcome.COMPLETE.exit_code
+    assert opened == []
+    [run_id] = run_ids(clean_env)
+    assert cli.main(["--export-only", run_id]) == Outcome.COMPLETE.exit_code
+    assert opened == ["sheet-id"] and len(sheet.values("Records")) == 13
+
+
+def test_incomplete_run_is_published_only_on_request(fake_site, google, clean_env, capsys):
+    sheet, opened = google
+    fake_site["sites"] = lambda n: FakeSite(make_docs(12, start=task_range(freeze_run_now()).start),
+                                            ignore_group=True)
+    assert cli.main(["--local-only"]) == Outcome.INCOMPLETE.exit_code
+    [run_id] = run_ids(clean_env)
+    assert cli.main(["--export-only", run_id]) == Outcome.INCOMPLETE.exit_code
+    assert opened == [] and "--publish-incomplete" in capsys.readouterr().err
+    assert cli.main(["--export-only", run_id, "--publish-incomplete"]) == Outcome.INCOMPLETE.exit_code
+    assert opened == ["sheet-id"]
+    assert ["Scrape outcome", "INCOMPLETE"] in sheet.values("Run Info")
+
+
+def test_publish_failure_is_reported_without_losing_the_local_run(fake_site, google, clean_env, monkeypatch, capsys):
+    def broken(path, key):
+        raise cli.PublishError("spreadsheet not found")
+
+    monkeypatch.setattr(cli, "open_spreadsheet", broken)
+    assert cli.main([]) == Outcome.INCOMPLETE.exit_code
+    assert "publishing failed: spreadsheet not found" in capsys.readouterr().err
+    [run_id] = run_ids(clean_env)
+    assert (clean_env / "out" / run_id / "export" / "records.csv").exists()
+
+
+def test_export_only_unknown_run_fails(google, capsys):
+    assert cli.main(["--export-only", "nope"]) == Outcome.FAILED.exit_code
+    assert "cannot export nope" in capsys.readouterr().err

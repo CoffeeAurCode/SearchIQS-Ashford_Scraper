@@ -21,7 +21,17 @@ from .dates import freeze_run_now
 from .flow import ChallengeError, FlowError, SiteFlow
 from .http import HttpError
 from .models import PARSER_VERSION, Outcome
-from .store import InventoryCorrupt, RunLocked, RunMeta, RunStore, StoreError, build_export, new_run_id
+from .sheets import PublishError, open_spreadsheet, publish
+from .store import (
+    ExportData,
+    InventoryCorrupt,
+    RunLocked,
+    RunMeta,
+    RunStore,
+    StoreError,
+    build_export,
+    new_run_id,
+)
 
 EPILOG = """\
 modes:
@@ -82,10 +92,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.check_access:
         return check_access(config)
-    if not args.local_only:
-        print("Google Sheets publishing is not implemented yet; use --local-only", file=sys.stderr)
-        return Outcome.FAILED.exit_code
-    return scrape(config, args.resume)
+    if args.export_only:
+        return export_only(config, args.export_only, args.publish_incomplete)
+    code, export, outcome = scrape(config, args.resume)
+    if args.local_only or export is None:
+        return code
+    return publish_export(config, export, outcome, args.publish_incomplete)
 
 
 def check_access(config: Config) -> int:
@@ -127,7 +139,7 @@ def _check_family(config: Config) -> bool:
     return True
 
 
-def scrape(config: Config, resume: str | None) -> int:
+def scrape(config: Config, resume: str | None) -> tuple[int, ExportData | None, Outcome]:
     deadline = time.monotonic() + config.run_deadline
     check_egress = site_egress_check(config)
     try:
@@ -135,7 +147,7 @@ def scrape(config: Config, resume: str | None) -> int:
             country = check_egress()
             if country != REQUIRED_COUNTRY:
                 print(f"egress country is {country}, not {REQUIRED_COUNTRY}: connect the VPN first", file=sys.stderr)
-                return Outcome.FAILED.exit_code
+                return Outcome.FAILED.exit_code, None, Outcome.FAILED
             run_now = freeze_run_now()
             meta = RunMeta(new_run_id(run_now), run_now, country, VERIFIED_COUNT_UNIT, config.redacted())
             store = RunStore(config.output_dir, meta.run_id)
@@ -145,10 +157,10 @@ def scrape(config: Config, resume: str | None) -> int:
             if meta.parser_version != PARSER_VERSION:
                 print(f"run {resume} was made with parser version {meta.parser_version}; "
                       f"this version is {PARSER_VERSION}. Start a new run.", file=sys.stderr)
-                return Outcome.FAILED.exit_code
+                return Outcome.FAILED.exit_code, None, Outcome.FAILED
     except (HttpError, StoreError) as exc:
         print(f"cannot start: {exc}", file=sys.stderr)
-        return Outcome.FAILED.exit_code
+        return Outcome.FAILED.exit_code, None, Outcome.FAILED
 
     print(f"run {meta.run_id}: {meta.range.start} .. {meta.range.end} (inclusive, America/New_York)")
     try:
@@ -167,10 +179,10 @@ def scrape(config: Config, resume: str | None) -> int:
             store.write_export(export)
     except RunLocked as exc:
         print(f"{exc}: another process is using this run", file=sys.stderr)
-        return Outcome.FAILED.exit_code
+        return Outcome.FAILED.exit_code, None, Outcome.FAILED
     except InventoryCorrupt as exc:
         print(f"run inventory is corrupt: {exc}", file=sys.stderr)
-        return Outcome.FAILED.exit_code
+        return Outcome.FAILED.exit_code, None, Outcome.FAILED
 
     outcome = export.outcome
     if stopped and not any(leaf.covered for leaf in resolution.leaves):
@@ -185,4 +197,40 @@ def scrape(config: Config, resume: str | None) -> int:
         hint = " after refreshing SEARCHIQS_CF_CLEARANCE" if stop_code == "cloudflare-challenge" else ""
         print(f"resume with: python -m searchiqs_scraper --local-only --resume {meta.run_id}{hint}")
     print(f"local export: {store.export_dir}")
+    return outcome.exit_code, export, outcome
+
+
+def export_only(config: Config, run_id: str, publish_incomplete: bool) -> int:
+    store = RunStore(config.output_dir, run_id)
+    try:
+        meta = store.load_run()
+        with store.locked():
+            resolution = store.resolve(meta)
+            export = build_export(meta, resolution)
+            store.write_export(export)
+    except (StoreError, InventoryCorrupt) as exc:
+        print(f"cannot export {run_id}: {exc}", file=sys.stderr)
+        return Outcome.FAILED.exit_code
+    report = export.report
+    print(f"run {run_id}: {export.outcome.value}, {report['records']} records, "
+          f"{report['records_with_issues']} with issues")
+    for gap in report["uncovered"]:
+        print(f"  uncovered: {gap}")
+    return publish_export(config, export, export.outcome, publish_incomplete)
+
+
+def publish_export(config: Config, export: ExportData, outcome: Outcome, publish_incomplete: bool) -> int:
+    if outcome is not Outcome.COMPLETE and not publish_incomplete:
+        print(f"not publishing a {outcome.value} run (use --publish-incomplete to publish it, labelled as such)",
+              file=sys.stderr)
+        return outcome.exit_code
+    try:
+        url = publish(export.tables, open_spreadsheet(config.google_credentials, config.google_sheet_id))
+    except PublishError as exc:
+        print(f"publishing failed: {exc}", file=sys.stderr)
+        return Outcome.INCOMPLETE.exit_code
+    except Exception as exc:
+        print(f"publishing failed ({type(exc).__name__}): {exc}", file=sys.stderr)
+        return Outcome.INCOMPLETE.exit_code
+    print(f"published {export.report['records']} records to {url}")
     return outcome.exit_code
