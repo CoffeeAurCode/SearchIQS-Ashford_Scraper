@@ -60,3 +60,29 @@ def test_require_sheets(tmp_path):
 def test_dotenv_file_is_read(clean_env):
     (clean_env / ".env").write_text("SEARCHIQS_MAX_PAGES=7\n")
     assert load_config().max_pages == 7
+
+
+def test_clearance_settings(clean_env):
+    from searchiqs_scraper.config import load_config
+    config = load_config({"SEARCHIQS_CF_CLEARANCE": "secret-cookie", "SEARCHIQS_USER_AGENT": "UA/1",
+                          "SEARCHIQS_SEC_CH_UA": '"Chromium";v="1"', "SEARCHIQS_ACCEPT_LANGUAGE": "en-US"})
+    assert config.browser_headers() == {"User-Agent": "UA/1", "sec-ch-ua": '"Chromium";v="1"',
+                                        "Accept-Language": "en-US"}
+    assert config.redacted()["cf_clearance"] == "set"
+    assert "secret-cookie" not in repr(config) and "secret-cookie" not in str(config.redacted())
+
+
+def test_clearance_requires_user_agent(clean_env):
+    import pytest
+    from searchiqs_scraper.config import ConfigError, load_config
+    with pytest.raises(ConfigError, match="USER_AGENT"):
+        load_config({"SEARCHIQS_CF_CLEARANCE": "x"})
+
+
+def test_ca_bundle_must_exist(clean_env):
+    import pytest
+    from searchiqs_scraper.config import ConfigError, load_config
+    with pytest.raises(ConfigError, match="CA_BUNDLE"):
+        load_config({"SEARCHIQS_CA_BUNDLE": str(clean_env / "missing.pem")})
+    (clean_env / "ca.pem").write_text("x")
+    assert load_config({"SEARCHIQS_CA_BUNDLE": str(clean_env / "ca.pem")}).ca_bundle.is_file()

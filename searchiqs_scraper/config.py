@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -31,6 +31,14 @@ class Config:
     backoff_cap: float = 60.0
     google_credentials: Path | None = None
     google_sheet_id: str | None = None
+    impersonate: str = "chrome"
+    cf_clearance: str | None = field(default=None, repr=False)
+    user_agent: str | None = None
+    sec_ch_ua: str | None = None
+    sec_ch_ua_mobile: str | None = None
+    sec_ch_ua_platform: str | None = None
+    accept_language: str | None = None
+    ca_bundle: Path | None = None
 
     def __post_init__(self) -> None:
         for name in ("delay_min", "delay_max", "connect_timeout", "request_timeout", "run_deadline",
@@ -47,6 +55,10 @@ class Config:
             raise ConfigError("backoff_base must not exceed backoff_cap")
         if self.connect_timeout > self.request_timeout:
             raise ConfigError("connect_timeout must not exceed request_timeout")
+        if self.cf_clearance and not self.user_agent:
+            raise ConfigError("SEARCHIQS_CF_CLEARANCE needs SEARCHIQS_USER_AGENT from the same browser")
+        if self.ca_bundle is not None and not self.ca_bundle.is_file():
+            raise ConfigError("SEARCHIQS_CA_BUNDLE does not point to a file")
 
     def require_sheets(self) -> None:
         missing = [n for n, v in (("GOOGLE_SERVICE_ACCOUNT_FILE", self.google_credentials),
@@ -61,7 +73,15 @@ class Config:
         data["output_dir"] = str(self.output_dir)
         data["google_credentials"] = "set" if self.google_credentials else "unset"
         data["google_sheet_id"] = "set" if self.google_sheet_id else "unset"
+        data["cf_clearance"] = "set" if self.cf_clearance else "unset"
+        data["ca_bundle"] = str(self.ca_bundle) if self.ca_bundle else None
         return data
+
+    def browser_headers(self) -> dict[str, str]:
+        pairs = (("User-Agent", self.user_agent), ("sec-ch-ua", self.sec_ch_ua),
+                 ("sec-ch-ua-mobile", self.sec_ch_ua_mobile), ("sec-ch-ua-platform", self.sec_ch_ua_platform),
+                 ("Accept-Language", self.accept_language))
+        return {name: value for name, value in pairs if value}
 
 
 _FLOAT_VARS = {
@@ -72,6 +92,15 @@ _FLOAT_VARS = {
     "RUN_DEADLINE": "run_deadline",
     "BACKOFF_BASE": "backoff_base",
     "BACKOFF_CAP": "backoff_cap",
+}
+_STR_VARS = {
+    "IMPERSONATE": "impersonate",
+    "CF_CLEARANCE": "cf_clearance",
+    "USER_AGENT": "user_agent",
+    "SEC_CH_UA": "sec_ch_ua",
+    "SEC_CH_UA_MOBILE": "sec_ch_ua_mobile",
+    "SEC_CH_UA_PLATFORM": "sec_ch_ua_platform",
+    "ACCEPT_LANGUAGE": "accept_language",
 }
 _INT_VARS = {
     "MAX_REDIRECTS": "max_redirects",
@@ -91,6 +120,11 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     for suffix, attr in _INT_VARS.items():
         if raw := env.get(ENV_PREFIX + suffix, "").strip():
             kwargs[attr] = _parse(raw, int, ENV_PREFIX + suffix)
+    for suffix, attr in _STR_VARS.items():
+        if raw := env.get(ENV_PREFIX + suffix, "").strip():
+            kwargs[attr] = raw
+    if raw := env.get(ENV_PREFIX + "CA_BUNDLE", "").strip():
+        kwargs["ca_bundle"] = Path(raw)
     if raw := env.get(ENV_PREFIX + "OUTPUT_DIR", "").strip():
         kwargs["output_dir"] = Path(raw)
     if raw := env.get("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip():
