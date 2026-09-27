@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Coffee Aur Code logo" width="150">
-</p>
-
 <h1 align="center">SearchIQS Ashford Land Records Scraper</h1>
 
 <p align="center">
@@ -185,3 +181,9 @@ Copyright (c) 2026 [CoffeeAurCode](https://github.com/CoffeeAurCode). Licensed u
   [GitHub](https://github.com/CoffeeAurCode).
 - **Reviewers of this submission** are additionally permitted to clone, install, run, and assess the code for the
   purpose of evaluating it.
+
+<br>
+<p align="right">
+  <a href="https://github.com/CoffeeAurCode"><img src="assets/coffeeaurcode.png" alt="Coffee Aur Code" width="48"></a><br>
+  <sub>made by <a href="https://github.com/CoffeeAurCode">CoffeeAurCode</a></sub>
+</p>
