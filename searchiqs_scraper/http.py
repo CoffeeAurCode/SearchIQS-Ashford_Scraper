@@ -60,6 +60,11 @@ class Response:
         return self.headers.get(name.lower())
 
 
+@dataclass
+class Pacer:
+    last_request: float | None = None
+
+
 class Transport(Protocol):
     def request(self, method: str, url: str, *, data: str | None, headers: Mapping[str, str],
                 timeout: tuple[float, float]) -> Response: ...
@@ -96,7 +101,8 @@ class CurlTransport:
 class HttpClient:
     def __init__(self, transport: Transport, config: Config, *, deadline: float | None = None,
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
-                 rng: Callable[[], float] = random.random, hosts: frozenset[str] = SITE_HOSTS) -> None:
+                 rng: Callable[[], float] = random.random, hosts: frozenset[str] = SITE_HOSTS,
+                 pacer: Pacer | None = None) -> None:
         self.transport = transport
         self.config = config
         self.deadline = deadline
@@ -104,7 +110,7 @@ class HttpClient:
         self._clock = clock
         self._rng = rng
         self._hosts = hosts
-        self._last_request: float | None = None
+        self._pacer = pacer or Pacer()
         self.requests_sent = 0
 
     def get(self, url: str, *, referer: str | None = None) -> Response:
@@ -171,14 +177,14 @@ class HttpClient:
 
     def _pace(self) -> None:
         now = self._clock()
-        if self._last_request is not None:
+        if self._pacer.last_request is not None:
             gap = self.config.delay_min + (self.config.delay_max - self.config.delay_min) * self._rng()
-            wait = self._last_request + gap - now
+            wait = self._pacer.last_request + gap - now
             if wait > 0:
                 self._check_budget(wait)
                 self._sleep(wait)
         self._check_budget(0.0)
-        self._last_request = self._clock()
+        self._pacer.last_request = self._clock()
 
     def _backoff(self, attempt: int) -> float:
         raw = min(self.config.backoff_cap, self.config.backoff_base * 2 ** (attempt - 1))

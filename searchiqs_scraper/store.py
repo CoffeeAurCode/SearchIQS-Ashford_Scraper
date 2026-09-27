@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .dates import SITE_TZ_NAME, DateRange, freeze_run_now, is_exact_partition, task_range
+from .grouping import group_records
 from .models import (
     OUTPUT_COLUMNS,
     PARSER_VERSION,
@@ -282,6 +283,7 @@ def split_children(node: WindowNode) -> list[DateRange]:
 class Leaf:
     key: str
     range: DateRange
+    parent: str | None
     node: WindowNode | None
     problem: str | None
 
@@ -415,7 +417,7 @@ class RunStore:
             reached.add(key)
             node, problem = self.read_node(meta, key, parent)
             if node is None:
-                leaves.append(Leaf(key, rng, None, problem))
+                leaves.append(Leaf(key, rng, parent, None, problem))
             elif node.status is WindowStatus.SPLIT:
                 try:
                     children = split_children(node)
@@ -424,7 +426,7 @@ class RunStore:
                 stack.extend((window_key(c), c, key) for c in reversed(children))
             else:
                 problem = None if node.status is WindowStatus.COMPLETE else f"incomplete: {node.reason}"
-                leaves.append(Leaf(key, rng, node, problem))
+                leaves.append(Leaf(key, rng, parent, node, problem))
         files = self.windows_dir.glob("*.json") if self.windows_dir.is_dir() else []
         orphans = sorted(p.name for p in files if p.stem not in reached)
         return Resolution(tuple(sorted(leaves, key=lambda leaf: leaf.range)), frozenset(reached), tuple(orphans))
@@ -470,7 +472,7 @@ class ExportData:
         return ("﻿" + buf.getvalue()).encode("utf-8")
 
 
-def build_export(meta: RunMeta, resolution: Resolution) -> ExportData:
+def build_export(meta: RunMeta, resolution: Resolution, stopped: str | None = None) -> ExportData:
     records: list[Record] = []
     for leaf in resolution.leaves:
         if leaf.node is None:
@@ -480,6 +482,8 @@ def build_export(meta: RunMeta, resolution: Resolution) -> ExportData:
                 record = replace(record, issues=record.issues + (f"window {leaf.range} {leaf.problem}",))
             records.append(record)
     records.sort(key=Record.sort_key)
+    grouped = group_records(records)
+    records = sorted(grouped.records, key=Record.sort_key)
 
     uncovered = [f"{leaf.range} ({leaf.problem})" for leaf in resolution.gaps]
     problem_records = sum(1 for r in records if r.has_problems)
@@ -494,6 +498,9 @@ def build_export(meta: RunMeta, resolution: Resolution) -> ExportData:
         ("Records", str(len(records))),
         ("Records with issues", str(problem_records)),
         ("Uncovered windows", str(len(uncovered))),
+        ("Duplicate documents removed", str(grouped.duplicates_removed)),
+        ("Identity conflicts", str(len(grouped.conflicts))),
+        ("Stopped early", stopped or "no"),
         ("Parser version", str(meta.parser_version)),
         ("Guarantee", GUARANTEE),
     ]
@@ -508,6 +515,9 @@ def build_export(meta: RunMeta, resolution: Resolution) -> ExportData:
         "records": len(records),
         "records_with_issues": problem_records,
         "uncovered": uncovered,
+        "duplicates_removed": grouped.duplicates_removed,
+        "identity_conflicts": list(grouped.conflicts),
+        "stopped": stopped,
         "orphans": list(resolution.orphans),
         "export_fidelity": tables.fidelity,
         "content_sha256": tables.content_sha256(),

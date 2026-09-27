@@ -45,6 +45,10 @@ class PagingError(FlowError):
     code = "paging-error"
 
 
+class PageLimitReached(PagingError):
+    code = "page-limit"
+
+
 @dataclass(frozen=True)
 class PassResult:
     window: DateRange
@@ -144,7 +148,7 @@ class SiteFlow:
             response = self.client.post(state.action, state.encode(), referer=response.url)
             soup = BeautifulSoup(response.text, "lxml")
             self._check_kind(response, soup, f"results page {expected_page + 1}", (PageKind.RESULTS,))
-        raise PagingError(f"stopped after max_pages={self.max_pages}")
+        raise PageLimitReached(f"stopped after max_pages={self.max_pages}")
 
     def _check_criteria(self, criteria: tuple[Criterion, ...], window: DateRange, where: str) -> None:
         if criteria != expected_criteria(window):

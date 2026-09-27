@@ -181,7 +181,7 @@ class FakeSite:
                  fail_on: Mapping[int, Exception] | None = None, ignore_group: bool = False,
                  extra_criteria: list[tuple[str, str, str]] | None = None, repeat_page: bool = False,
                  page_step: int = 1, stale_rows: bool = False,
-                 statuses: Mapping[int, tuple[int, dict[str, str]]] | None = None) -> None:
+                 statuses: Mapping[int, tuple[int, dict[str, str]]] | None = None, cap: int | None = None) -> None:
         self.docs = docs
         self.page_size = page_size
         self.challenge_on = challenge_on or set()
@@ -192,6 +192,7 @@ class FakeSite:
         self.page_step = page_step
         self.stale_rows = stale_rows
         self.statuses = dict(statuses or {})
+        self.cap = cap
         self.log: list[tuple[str, str, dict[str, list[str]]]] = []
         self.version = 0
         self.guest = False
@@ -270,9 +271,10 @@ class FakeSite:
     def _results(self, url: str) -> Response:
         if not self.found:
             return Response(200, url, no_results_html(self._next_vs(), self.criteria))
-        pages = (len(self.found) + self.page_size - 1) // self.page_size
+        served = self.found[:self.cap] if self.cap is not None else self.found
+        pages = (len(served) + self.page_size - 1) // self.page_size
         shown = 1 if self.stale_rows else self.page
-        chunk = self.found[(shown - 1) * self.page_size:shown * self.page_size]
+        chunk = served[(shown - 1) * self.page_size:shown * self.page_size]
         return Response(200, url, results_html(self._next_vs(), chunk, len(self.found), self.page, pages,
                                                self.criteria))
 

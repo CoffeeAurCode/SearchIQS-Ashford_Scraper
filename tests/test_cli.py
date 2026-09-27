@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from conftest import NetworkBlocked
+from fakesite import FakeSite, make_docs
+from searchiqs_scraper import cli
 from searchiqs_scraper.cli import main
+from searchiqs_scraper.config import Config
+from searchiqs_scraper.dates import freeze_run_now, task_range
+from searchiqs_scraper.http import HttpClient
+from searchiqs_scraper.models import Outcome
+from test_collector import Runner
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -51,3 +58,77 @@ def test_network_is_blocked_in_tests():
         socket.create_connection(("example.com", 443), timeout=1)
     with pytest.raises(NetworkBlocked):
         socket.socket().connect(("127.0.0.1", 9))
+
+
+@pytest.fixture
+def fake_site(clean_env, monkeypatch):
+    monkeypatch.setenv("SEARCHIQS_OUTPUT_DIR", str(clean_env / "out"))
+    docs = make_docs(12, start=task_range(freeze_run_now()).start)
+    state = {"egress": "US", "sites": lambda n: FakeSite(docs), "runner": None}
+
+    def pass_runner(config, deadline=None):
+        state["runner"] = Runner(state["sites"])
+        return state["runner"]
+
+    monkeypatch.setattr(cli, "site_egress_check", lambda config: lambda: state["egress"])
+    monkeypatch.setattr(cli, "site_pass_runner", pass_runner)
+    monkeypatch.setattr(cli, "site_client",
+                        lambda config: HttpClient(state["sites"](1), Config(), sleep=lambda s: None))
+    return state
+
+
+def run_ids(root):
+    return sorted(p.name for p in (root / "out").iterdir()) if (root / "out").exists() else []
+
+
+def test_local_only_run_completes_and_writes_export(fake_site, clean_env, capsys):
+    assert cli.main(["--local-only"]) == Outcome.COMPLETE.exit_code
+    out = capsys.readouterr().out
+    assert "outcome: COMPLETE: 12 records, 0 with issues" in out
+    [run_id] = run_ids(clean_env)
+    export = clean_env / "out" / run_id / "export"
+    assert {p.name for p in export.iterdir()} == {"records.csv", "sheet_rows.json", "report.json"}
+
+
+def test_challenge_then_resume(fake_site, clean_env, capsys):
+    fake_site["sites"] = lambda n: FakeSite(make_docs(1), challenge_on={1})
+    assert cli.main(["--local-only"]) == Outcome.FAILED.exit_code
+    captured = capsys.readouterr()
+    [run_id] = run_ids(clean_env)
+    assert "cloudflare-challenge" in captured.err
+    assert f"--resume {run_id} after refreshing SEARCHIQS_CF_CLEARANCE" in captured.out
+
+    docs = make_docs(12, start=task_range(freeze_run_now()).start)
+    fake_site["sites"] = lambda n: FakeSite(docs)
+    assert cli.main(["--local-only", "--resume", run_id]) == Outcome.COMPLETE.exit_code
+    assert run_ids(clean_env) == [run_id]
+
+
+def test_new_run_refuses_non_us_egress(fake_site, clean_env, capsys):
+    fake_site["egress"] = "IN"
+    assert cli.main(["--local-only"]) == Outcome.FAILED.exit_code
+    assert "connect the VPN" in capsys.readouterr().err
+    assert run_ids(clean_env) == []
+
+
+def test_resume_unknown_run_fails(fake_site, capsys):
+    assert cli.main(["--local-only", "--resume", "nope"]) == Outcome.FAILED.exit_code
+    assert "cannot start" in capsys.readouterr().err
+
+
+def test_check_access(fake_site, capsys):
+    assert cli.main(["--check-access"]) == Outcome.COMPLETE.exit_code
+    assert "access OK" in capsys.readouterr().out
+    fake_site["sites"] = lambda n: FakeSite(make_docs(1), challenge_on={3})
+    assert cli.main(["--check-access"]) == Outcome.FAILED.exit_code
+    assert "refresh SEARCHIQS_CF_CLEARANCE" in capsys.readouterr().err
+
+
+def test_publishing_mode_not_built_yet(fake_site, clean_env, monkeypatch, capsys):
+    creds = clean_env / "sa.json"
+    creds.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(creds))
+    monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet")
+    assert cli.main([]) == Outcome.FAILED.exit_code
+    assert "--local-only" in capsys.readouterr().err
+    assert fake_site["runner"] is None

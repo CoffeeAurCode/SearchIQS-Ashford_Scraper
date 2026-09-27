@@ -26,6 +26,7 @@ class Config:
     max_redirects: int = 5
     read_attempts: int = 3
     max_pages: int = 1000
+    max_passes: int = 6
     run_deadline: float = 7200.0
     backoff_base: float = 2.0
     backoff_cap: float = 60.0
@@ -49,6 +50,8 @@ class Config:
         for name in ("max_redirects", "read_attempts", "max_pages"):
             if getattr(self, name) < 1:
                 raise ConfigError(f"{name} must be at least 1")
+        if self.max_passes < 2:
+            raise ConfigError("max_passes must be at least 2 (each window is observed twice)")
         if self.delay_min > self.delay_max:
             raise ConfigError("delay_min must not exceed delay_max")
         if self.backoff_base > self.backoff_cap:
@@ -106,6 +109,7 @@ _INT_VARS = {
     "MAX_REDIRECTS": "max_redirects",
     "READ_ATTEMPTS": "read_attempts",
     "MAX_PAGES": "max_pages",
+    "MAX_PASSES": "max_passes",
 }
 
 
