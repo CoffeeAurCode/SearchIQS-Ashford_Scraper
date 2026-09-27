@@ -118,10 +118,37 @@ def test_resume_unknown_run_fails(fake_site, capsys):
 
 def test_check_access(fake_site, capsys):
     assert cli.main(["--check-access"]) == Outcome.COMPLETE.exit_code
-    assert "access OK" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "IPv6: egress US, access OK" in out and "SEARCHIQS_IP_FAMILY=6" in out and "IPv4" not in out
     fake_site["sites"] = lambda n: FakeSite(make_docs(1), challenge_on={3})
     assert cli.main(["--check-access"]) == Outcome.FAILED.exit_code
-    assert "refresh SEARCHIQS_CF_CLEARANCE" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "IPv6: egress US, Cloudflare challenge" in captured.out
+    assert "IPv4: egress US, Cloudflare challenge" in captured.out
+    assert "refresh SEARCHIQS_CF_CLEARANCE" in captured.err
+
+
+def test_check_access_finds_the_family_the_clearance_was_issued_to(fake_site, monkeypatch, capsys):
+    families = []
+
+    def client_for(config):
+        families.append(config.ip_family)
+        site = FakeSite(make_docs(1), challenge_on={3} if config.ip_family == "6" else set())
+        return HttpClient(site, Config(), sleep=lambda s: None)
+
+    monkeypatch.setattr(cli, "site_client", client_for)
+    assert cli.main(["--check-access"]) == Outcome.COMPLETE.exit_code
+    out = capsys.readouterr().out
+    assert families == ["6", "4"]
+    assert "IPv6: egress US, Cloudflare challenge" in out and "IPv4: egress US, access OK" in out
+    assert "$env:SEARCHIQS_IP_FAMILY = '4'" in out
+
+
+def test_check_access_with_a_fixed_family_tries_only_that_one(fake_site, monkeypatch, capsys):
+    monkeypatch.setenv("SEARCHIQS_IP_FAMILY", "4")
+    assert cli.main(["--check-access"]) == Outcome.COMPLETE.exit_code
+    out = capsys.readouterr().out
+    assert "IPv4: egress US, access OK" in out and "IPv6" not in out and "SEARCHIQS_IP_FAMILY" not in out
 
 
 def test_publishing_mode_not_built_yet(fake_site, clean_env, monkeypatch, capsys):

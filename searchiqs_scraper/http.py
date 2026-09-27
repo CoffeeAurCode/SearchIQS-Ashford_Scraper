@@ -19,6 +19,7 @@ CLEARANCE_DOMAIN = ".searchiqs.com"
 EGRESS_URL = "https://api.country.is/"
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 REDIRECT_STATUS = frozenset({301, 302, 303})
+IP_RESOLVE = {"4": 1, "6": 2}
 
 
 class HttpError(Exception):
@@ -55,6 +56,7 @@ class Response:
     url: str
     text: str
     headers: Mapping[str, str] = field(default_factory=dict)
+    remote_ip: str | None = None
 
     def header(self, name: str) -> str | None:
         return self.headers.get(name.lower())
@@ -75,11 +77,14 @@ class Transport(Protocol):
 class CurlTransport:
     def __init__(self, config: Config) -> None:
         from curl_cffi import requests as curl_requests
+        from curl_cffi.const import CurlOpt
 
         self._errors = curl_requests.exceptions.RequestException
+        options = {CurlOpt.IPRESOLVE: IP_RESOLVE[config.ip_family]} if config.ip_family in IP_RESOLVE else {}
         self._session = curl_requests.Session(
             impersonate=config.impersonate,
             verify=str(config.ca_bundle) if config.ca_bundle else True,
+            curl_options=options,
         )
         self._session.headers.update(config.browser_headers())
         if config.cf_clearance:
@@ -92,7 +97,8 @@ class CurlTransport:
                                       allow_redirects=False)
         except self._errors as exc:
             raise TransportError(f"{type(exc).__name__}: {exc}") from exc
-        return Response(r.status_code, str(r.url), r.text, {k.lower(): v for k, v in r.headers.items()})
+        return Response(r.status_code, str(r.url), r.text, {k.lower(): v for k, v in r.headers.items()},
+                        getattr(r, "primary_ip", None) or None)
 
     def close(self) -> None:
         self._session.close()

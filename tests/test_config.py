@@ -32,6 +32,8 @@ def test_env_overrides():
         {"SEARCHIQS_DELAY_MIN": "4"},
         {"SEARCHIQS_BACKOFF_BASE": "90"},
         {"SEARCHIQS_CONNECT_TIMEOUT": "90"},
+        {"SEARCHIQS_IP_FAMILY": "ipv6"},
+        {"SEARCHIQS_MAX_PASSES": "1"},
     ],
 )
 def test_invalid_values_rejected(env):
@@ -86,3 +88,9 @@ def test_ca_bundle_must_exist(clean_env):
         load_config({"SEARCHIQS_CA_BUNDLE": str(clean_env / "missing.pem")})
     (clean_env / "ca.pem").write_text("x")
     assert load_config({"SEARCHIQS_CA_BUNDLE": str(clean_env / "ca.pem")}).ca_bundle.is_file()
+
+
+@pytest.mark.parametrize("value", ["auto", "4", "6"])
+def test_ip_family(value):
+    assert load_config({"SEARCHIQS_IP_FAMILY": value}).ip_family == value
+    assert load_config({}).ip_family == "auto"

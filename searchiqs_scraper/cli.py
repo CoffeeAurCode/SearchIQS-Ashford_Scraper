@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 import time
+from dataclasses import replace
 from typing import Sequence
 
 from . import __version__
@@ -27,7 +28,7 @@ modes:
   (default)             new run over today-80 days .. today (America/New_York), then publish
   --resume RUN_ID       continue a run with its saved date range, redoing only uncovered windows
   --export-only RUN_ID  publish an existing local run without scraping
-  --check-access        check US egress and that the guest search page loads (3 site requests)
+  --check-access        check US egress and guest access over IPv6, then IPv4 (3 site requests each)
 
 exit codes:
   0  scrape COMPLETE and export verified (or --local-only)
@@ -88,28 +89,42 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def check_access(config: Config) -> int:
+    families = ["6", "4"] if config.ip_family == "auto" else [config.ip_family]
+    for family in families:
+        if _check_family(replace(config, ip_family=family)):
+            if config.ip_family == "auto":
+                print(f"use this address family for the run: SEARCHIQS_IP_FAMILY={family} "
+                      f"(PowerShell: $env:SEARCHIQS_IP_FAMILY = '{family}')")
+            print("access OK: guest search page reached")
+            return Outcome.COMPLETE.exit_code
+    print("no address family got through: the clearance is missing, expired, or was issued to another address. "
+          "With the VPN on, reload the site in your browser and refresh SEARCHIQS_CF_CLEARANCE.", file=sys.stderr)
+    return Outcome.FAILED.exit_code
+
+
+def _check_family(config: Config) -> bool:
+    label = f"IPv{config.ip_family}"
     try:
         country = site_egress_check(config)()
     except HttpError as exc:
-        print(f"egress check failed: {exc}", file=sys.stderr)
-        return Outcome.FAILED.exit_code
-    print(f"egress country: {country}")
+        print(f"{label}: egress check failed: {exc}")
+        return False
     if country != REQUIRED_COUNTRY:
-        print(f"not {REQUIRED_COUNTRY}: connect the VPN first", file=sys.stderr)
-        return Outcome.FAILED.exit_code
+        print(f"{label}: egress country is {country}, not {REQUIRED_COUNTRY}: connect the VPN first")
+        return False
     client = site_client(config)
     try:
-        SiteFlow(client).open_search()
-    except ChallengeError as exc:
-        print(str(exc), file=sys.stderr)
-        return Outcome.FAILED.exit_code
+        response = SiteFlow(client).open_search()
+    except ChallengeError:
+        print(f"{label}: egress {country}, Cloudflare challenge (clearance not valid over this address)")
+        return False
     except (FlowError, HttpError) as exc:
-        print(f"site access failed ({exc.code}): {exc}", file=sys.stderr)
-        return Outcome.FAILED.exit_code
+        print(f"{label}: egress {country}, site access failed ({exc.code}): {exc}")
+        return False
     finally:
         client.close()
-    print("access OK: guest search page reached")
-    return Outcome.COMPLETE.exit_code
+    print(f"{label}: egress {country}, access OK (site address {response.remote_ip or 'unknown'})")
+    return True
 
 
 def scrape(config: Config, resume: str | None) -> int:

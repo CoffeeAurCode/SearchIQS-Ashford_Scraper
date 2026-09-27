@@ -10,6 +10,7 @@ from dotenv import dotenv_values, find_dotenv
 
 ENV_PREFIX = "SEARCHIQS_"
 BASE_URL = "https://www.searchiqs.com/CTASH/"
+IP_FAMILIES = ("auto", "4", "6")
 
 
 class ConfigError(ValueError):
@@ -33,6 +34,7 @@ class Config:
     google_credentials: Path | None = None
     google_sheet_id: str | None = None
     impersonate: str = "chrome"
+    ip_family: str = "auto"
     cf_clearance: str | None = field(default=None, repr=False)
     user_agent: str | None = None
     sec_ch_ua: str | None = None
@@ -60,6 +62,8 @@ class Config:
             raise ConfigError("connect_timeout must not exceed request_timeout")
         if self.cf_clearance and not self.user_agent:
             raise ConfigError("SEARCHIQS_CF_CLEARANCE needs SEARCHIQS_USER_AGENT from the same browser")
+        if self.ip_family not in IP_FAMILIES:
+            raise ConfigError(f"SEARCHIQS_IP_FAMILY must be one of {', '.join(IP_FAMILIES)}, got {self.ip_family!r}")
         if self.ca_bundle is not None and not self.ca_bundle.is_file():
             raise ConfigError("SEARCHIQS_CA_BUNDLE does not point to a file")
 
@@ -98,6 +102,7 @@ _FLOAT_VARS = {
 }
 _STR_VARS = {
     "IMPERSONATE": "impersonate",
+    "IP_FAMILY": "ip_family",
     "CF_CLEARANCE": "cf_clearance",
     "USER_AGENT": "user_agent",
     "SEC_CH_UA": "sec_ch_ua",
